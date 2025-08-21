@@ -1,0 +1,257 @@
+<script type="text/javascript">
+        var gk_isXlsx = false;
+        var gk_xlsxFileLookup = {};
+        var gk_fileData = {};
+        function filledCell(cell) {
+          return cell !== '' && cell != null;
+        }
+        function loadFileData(filename) {
+        if (gk_isXlsx && gk_xlsxFileLookup[filename]) {
+            try {
+                var workbook = XLSX.read(gk_fileData[filename], { type: 'base64' });
+                var firstSheetName = workbook.SheetNames[0];
+                var worksheet = workbook.Sheets[firstSheetName];
+
+                // Convert sheet to JSON to filter blank rows
+                var jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, blankrows: false, defval: '' });
+                // Filter out blank rows (rows where all cells are empty, null, or undefined)
+                var filteredData = jsonData.filter(row => row.some(filledCell));
+
+                // Heuristic to find the header row by ignoring rows with fewer filled cells than the next row
+                var headerRowIndex = filteredData.findIndex((row, index) =>
+                  row.filter(filledCell).length >= filteredData[index + 1]?.filter(filledCell).length
+                );
+                // Fallback
+                if (headerRowIndex === -1 || headerRowIndex > 25) {
+                  headerRowIndex = 0;
+                }
+
+                // Convert filtered JSON back to CSV
+                var csv = XLSX.utils.aoa_to_sheet(filteredData.slice(headerRowIndex)); // Create a new sheet from filtered array of arrays
+                csv = XLSX.utils.sheet_to_csv(csv, { header: 1 });
+                return csv;
+            } catch (e) {
+                console.error(e);
+                return "";
+            }
+        }
+        return gk_fileData[filename] || "";
+        }
+        </script><!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Simulation de Bibliothèque - Réseau de Petri</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            background-color: #0f172a;
+            color: #e5e7eb;
+            font-family: Arial, sans-serif;
+        }
+        canvas {
+            background-color: #374151;
+            border: 1px solid #6b7280;
+            margin-bottom: 1rem;
+            cursor: pointer;
+        }
+        .resource-input {
+            background-color: #1e293b;
+            border: 1px solid #6b7280;
+            color: #e5e7eb;
+            padding: 0.5rem;
+            border-radius: 0.25rem;
+            width: 80px;
+        }
+        .error-message {
+            color: #ef4444;
+            font-size: 0.8rem;
+            display: none;
+        }
+        .log-table-container {
+            max-height: 300px;
+            overflow-y: auto;
+            max-width: 400px;
+            margin-left: auto;
+            margin-right: auto;
+        }
+        .log-table {
+            width: 100%;
+            border-collapse: collapse;
+            background-color: #1e293b;
+        }
+        .log-table th, .log-table td {
+            border: 1px solid #6b7280;
+            padding: 0.5rem;
+            text-align: left;
+            font-size: 0.9rem;
+        }
+        .log-table th {
+            background-color: #374151;
+            font-weight: bold;
+        }
+        .log-table td {
+            word-break: break-word;
+        }
+        @media (min-width: 1024px) {
+            .log-table-container {
+                margin-left: 1rem;
+                margin-right: 0;
+            }
+        }
+    </style>
+</head>
+<body class="p-6">
+    <div class="container mx-auto">
+        <h1 class="text-3xl font-bold mb-6 text-center">Simulation de Bibliothèque - Réseau de Petri</h1>
+
+        <!-- Conteneur pour le canvas et le journal -->
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4 relative">
+            <!-- Canvas pour le réseau de Petri -->
+            <div class="flex justify-center">
+                <canvas id="petriCanvas" width="800" height="600"></canvas>
+            </div>
+
+            <!-- Tableau du journal -->
+            <div class="log-table-container">
+                <h2 class="text-xl font-semibold mb-2 text-center">Journal des Transitions</h2>
+                <table class="log-table">
+                    <thead>
+                        <tr>
+                            <th>Horodatage</th>
+                            <th>Transition</th>
+                            <th>État des lieux</th>
+                        </tr>
+                    </thead>
+                    <tbody id="logTableBody">
+                        <!-- Les entrées seront ajoutées dynamiquement -->
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Champs pour modifier les ressources -->
+        <div class="mb-6">
+            <h2 class="text-xl font-semibold mb-2 text-center">Modifier les Ressources</h2>
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <div>
+                    <label for="tokens-users_idle" class="block text-sm">Utilisateurs Libres</label>
+                    <input type="number" id="tokens-users_idle" class="resource-input" min="0" value="8">
+                </div>
+                <div>
+                    <label for="tokens-user_borrow_capacity" class="block text-sm">Limite d'Emprunt par Utilisateur</label>
+                    <input type="number" id="tokens-user_borrow_capacity" class="resource-input" min="0" value="24">
+                </div>
+                <div>
+                    <label for="tokens-books_available" class="block text-sm">Livres Disponibles</label>
+                    <input type="number" id="tokens-books_available" class="resource-input" min="0" value="5">
+                </div>
+            </div>
+            <div class="mt-4 text-center">
+                <button onclick="updateResources()" class="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded">Mettre à jour les ressources</button>
+                <p id="error-message" class="error-message">Erreur : Toutes les valeurs doivent être des nombres entiers non négatifs.</p>
+            </div>
+        </div>
+
+        <!-- Boutons pour tirer les transitions -->
+        <div class="flex flex-wrap justify-center gap-2 mb-4">
+            <button id="fire-request_book" onclick="fireTransition('request_book')" class="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded disabled:bg-gray-500">Demander Livre</button>
+            <button id="fire-process_borrow" onclick="fireTransition('process_borrow')" class="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded disabled:bg-gray-500">Traiter Emprunt</button>
+            <button id="fire-wait_for_book" onclick="fireTransition('wait_for_book')" class="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded disabled:bg-gray-500">Mise en Attente</button>
+            <button id="fire-return_book" onclick="fireTransition('return_book')" class="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded disabled:bg-gray-500">Retourner Livre</button>
+            <button id="fire-serve_waiting" onclick="fireTransition('serve_waiting')" class="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded disabled:bg-gray-500">Servir File d’Attente</button>
+        </div>
+
+        <!-- Bouton pour lancer/arrêter la simulation -->
+        <div class="text-center">
+            <button id="runSimulation" onclick="runSimulation()" class="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-6 rounded">Lancer Simulation</button>
+        </div>
+    </div>
+
+    <script src="petri-library.js"></script>
+    <script>
+        function updateResources() {
+            const errorMessage = document.getElementById('error-message');
+            const tokenInputs = {
+                'users_idle': document.getElementById('tokens-users_idle').value,
+                'user_borrow_capacity': document.getElementById('tokens-user_borrow_capacity').value,
+                'books_available': document.getElementById('tokens-books_available').value
+            };
+
+            // Validation des entrées
+            for (const placeId in tokenInputs) {
+                const value = tokenInputs[placeId];
+                if (isNaN(value) || value < 0 || !Number.isInteger(Number(value))) {
+                    errorMessage.style.display = 'block';
+                    return;
+                }
+            }
+            errorMessage.style.display = 'none';
+
+            // Mise à jour des jetons
+            window.updateTokens(tokenInputs);
+        }
+
+        // Fonction pour rendre le journal
+        function renderLog() {
+            const logTableBody = document.getElementById('logTableBody');
+            logTableBody.innerHTML = ''; // Vider le tableau
+            const logEntries = window.logEntries || [];
+            logEntries.forEach(entry => {
+                const row = document.createElement('tr');
+                row.innerHTML = `
+                    <td>${entry.timestamp}</td>
+                    <td>${entry.transition}</td>
+                    <td>${entry.state}</td>
+                `;
+                logTableBody.insertBefore(row, logTableBody.firstChild); // Ajouter en haut
+            });
+        }
+
+        // Gestion des clics sur le canvas
+        document.getElementById('petriCanvas').addEventListener('click', function(event) {
+            const rect = this.getBoundingClientRect();
+            const x = event.clientX - rect.left;
+            const y = event.clientY - rect.top;
+
+            // Vérifier les lieux
+            let clickedPlace = null;
+            window.places.forEach(place => {
+                const dx = x - place.x;
+                const dy = y - place.y;
+                if (Math.sqrt(dx * dx + dy * dy) < 25) {
+                    clickedPlace = place.id;
+                }
+            });
+
+            // Vérifier les transitions
+            let clickedTransition = null;
+            window.transitions.forEach(transition => {
+                const tx = transition.x - 20;
+                const ty = transition.y - 10;
+                if (x >= tx && x <= tx + 40 && y >= ty && y <= ty + 20) {
+                    clickedTransition = transition.id;
+                }
+            });
+
+            // Appliquer la surbrillance
+            if (clickedPlace) {
+                window.highlightPlace(clickedPlace);
+                window.highlightTransition(null);
+            } else if (clickedTransition) {
+                window.highlightTransition(clickedTransition);
+                window.highlightPlace(null);
+            } else {
+                window.highlightPlace(null);
+                window.highlightTransition(null);
+            }
+        });
+
+        // Initialiser le journal
+        document.addEventListener('DOMContentLoaded', () => {
+            renderLog();
+        });
+    </script>
+</body>
+</html>
